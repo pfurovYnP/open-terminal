@@ -89,6 +89,24 @@ EXECUTE_DESCRIPTION = os.environ.get(
     config.get("execute_description", ""),
 )
 
+# Maximum size (in bytes) for per-process JSONL log files.
+# Once exceeded, logging stops for that process (the process keeps running).
+MAX_PROCESS_LOG_SIZE = int(
+    os.environ.get(
+        "OPEN_TERMINAL_MAX_LOG_SIZE",
+        config.get("max_log_size", 50_000_000),  # 50 MB
+    )
+)
+
+# How long (in seconds) to keep finished-process log files on disk.
+# After this period, _cleanup_expired() will delete the log file.
+PROCESS_LOG_RETENTION: float = float(
+    os.environ.get(
+        "OPEN_TERMINAL_LOG_RETENTION",
+        config.get("log_retention", 604_800),  # 7 days
+    )
+)
+
 ENABLE_NOTEBOOKS = os.environ.get(
     "OPEN_TERMINAL_ENABLE_NOTEBOOKS",
     str(config.get("enable_notebooks", True)),

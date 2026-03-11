@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.9] - 2026-03-11
+
+### Added
+
+- ⏰ **Timestamp-sortable process IDs** — process IDs now use a `YYYYMMDD-HHMMSS-<random>` format so log files sort chronologically in the filesystem. The most recent log is always at the bottom of `ls`. ([#54](https://github.com/open-webui/open-terminal/issues/54))
+- ⚙️ **`OPEN_TERMINAL_MAX_LOG_SIZE`** — environment variable (or `max_log_size` in config.toml) to set the per-process log file size limit in bytes. Default: 50 MB.
+- ⚙️ **`OPEN_TERMINAL_LOG_RETENTION`** — environment variable (or `log_retention` in config.toml) to set how long finished-process log files are kept on disk before automatic cleanup. Default: 7 days.
+- 📁 **`utils/log.py`** — extracted process log management code (`BoundedLogWriter`, `log_process`, `read_log`, `tail_log`) into a dedicated module to reduce `main.py` size.
+
+### Fixed
+
+- 🐛 **Memory leak — unbounded process log growth** — JSONL log files for background processes now rotate when they exceed a configurable size limit (`OPEN_TERMINAL_MAX_LOG_SIZE`, default 50 MB). When the limit is reached, the oldest half of the file is discarded and writing continues, so the most recent output is always available. Previously, a long-running process could grow its log file without limit, and `_read_log()` loaded the entire file into memory on every status poll — causing the container to consume all available host RAM (~26 GB) and trigger the OOM killer. ([#52](https://github.com/open-webui/open-terminal/issues/52))
+
 ## [0.11.8] - 2026-03-11
 
 ### Fixed

@@ -24,7 +24,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-from open_terminal.env import API_KEY, BINARY_FILE_MIME_PREFIXES, CORS_ALLOWED_ORIGINS, ENABLE_NOTEBOOKS, ENABLE_TERMINAL, EXECUTE_DESCRIPTION, EXECUTE_TIMEOUT, LOG_DIR, MAX_TERMINAL_SESSIONS, MULTI_USER, OPEN_TERMINAL_INFO, TERMINAL_TERM
+from open_terminal.env import API_KEY, BINARY_FILE_MIME_PREFIXES, CORS_ALLOWED_ORIGINS, ENABLE_NOTEBOOKS, ENABLE_TERMINAL, EXECUTE_DESCRIPTION, EXECUTE_TIMEOUT, LOG_DIR, MAX_TERMINAL_SESSIONS, MULTI_USER, OPEN_TERMINAL_INFO, PROCESS_LOG_RETENTION, TERMINAL_TERM
 from open_terminal.utils.runner import PipeRunner, ProcessRunner, create_runner
 from open_terminal.utils.fs import UserFS
 
@@ -235,92 +235,16 @@ _processes: dict[str, BackgroundProcess] = {}
 _EXPIRY_SECONDS = 300  # auto-clean finished processes after 5 min
 
 
-async def _log_process(background_process: BackgroundProcess):
-    """Read process output and persist to a log file."""
-    log_file = None
-    try:
-        if background_process.log_path:
-            await aiofiles.os.makedirs(
-                os.path.dirname(background_process.log_path), exist_ok=True
-            )
-            log_file = await aiofiles.open(background_process.log_path, "a", encoding="utf-8")
-            await log_file.write(
-                json.dumps(
-                    {
-                        "type": "start",
-                        "command": background_process.command,
-                        "pid": background_process.runner.pid,
-                        "ts": time.time(),
-                    }
-                )
-                + "\n"
-            )
-            await log_file.flush()
-    except OSError:
-        log_file = None
-
-    try:
-        await background_process.runner.read_output(log_file)
-    finally:
-        exit_code = await background_process.runner.wait()
-        background_process.exit_code = exit_code
-        background_process.status = "done"
-        background_process.finished_at = time.time()
-        background_process.runner.close()
-        if log_file:
-            await log_file.write(
-                json.dumps(
-                    {
-                        "type": "end",
-                        "exit_code": background_process.exit_code,
-                        "ts": time.time(),
-                    }
-                )
-                + "\n"
-            )
-            await log_file.close()
+from open_terminal.utils.log import log_process, read_log
 
 
-async def _read_log(
-    log_path: Optional[str],
-    offset: int = 0,
-    tail: Optional[int] = None,
-) -> tuple[list[dict], int, bool]:
-    """Read output entries from a JSONL log file.
-
-    Returns (entries, next_offset, truncated).
-    """
-    entries: list[dict] = []
-    if not log_path or not await aiofiles.os.path.isfile(log_path):
-        return entries, 0, False
-
-    async with aiofiles.open(log_path, encoding="utf-8") as f:
-        lines = await f.readlines()
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if record.get("type") in ("stdout", "stderr", "output"):
-            entries.append({"type": record["type"], "data": record["data"]})
-
-    total = len(entries)
-    entries = entries[offset:]
-
-    truncated = False
-    if tail is not None and len(entries) > tail:
-        entries = entries[-tail:]
-        truncated = True
-
-    return entries, total, truncated
 
 
 def _cleanup_expired():
-    """Remove finished processes that have expired."""
+    """Remove finished processes that have expired.
+
+    Also deletes log files older than *LOG_RETENTION_SECONDS*.
+    """
     now = time.time()
     expired = [
         process_id
@@ -329,7 +253,17 @@ def _cleanup_expired():
         and now - background_process.finished_at > _EXPIRY_SECONDS
     ]
     for process_id in expired:
-        del _processes[process_id]
+        bp = _processes.pop(process_id)
+        # Delete the log file if it has exceeded the retention period.
+        if (
+            bp.log_path
+            and bp.finished_at
+            and now - bp.finished_at > PROCESS_LOG_RETENTION
+        ):
+            try:
+                os.remove(bp.log_path)
+            except OSError:
+                pass
 
 
 def _get_process(process_id: str) -> BackgroundProcess:
@@ -1023,12 +957,12 @@ async def execute(
         request.command, cwd, subprocess_env, run_as_user=fs.username
     )
 
-    process_id = uuid.uuid4().hex[:12]
+    process_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     log_path = os.path.join(LOG_DIR, "processes", f"{process_id}.jsonl")
     background_process = BackgroundProcess(
         id=process_id, command=request.command, runner=runner, log_path=log_path
     )
-    background_process.log_task = asyncio.create_task(_log_process(background_process))
+    background_process.log_task = asyncio.create_task(log_process(background_process))
     _processes[process_id] = background_process
 
     if wait is None and EXECUTE_TIMEOUT:
@@ -1041,7 +975,7 @@ async def execute(
         except asyncio.TimeoutError:
             pass
 
-    output, next_offset, truncated = await _read_log(
+    output, next_offset, truncated = await read_log(
         background_process.log_path, offset=0, tail=tail
     )
 
@@ -1099,7 +1033,7 @@ async def get_status(
         except asyncio.TimeoutError:
             pass
 
-    output, next_offset, truncated = await _read_log(
+    output, next_offset, truncated = await read_log(
         background_process.log_path, offset=offset, tail=tail
     )
 
