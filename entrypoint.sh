@@ -67,4 +67,85 @@ if [ -n "${OPEN_TERMINAL_PIP_PACKAGES:-}" ]; then
     pip install --no-cache-dir $OPEN_TERMINAL_PIP_PACKAGES
 fi
 
+# -----------------------------------------------------------------------
+# Network egress filtering via DNS whitelist + iptables + capability drop
+#
+#   OPEN_TERMINAL_ALLOWED_DOMAINS unset    → full access
+#   OPEN_TERMINAL_ALLOWED_DOMAINS=""       → block ALL outbound
+#   OPEN_TERMINAL_ALLOWED_DOMAINS="a,b"    → DNS whitelist (dnsmasq)
+#
+# Restricted mode runs a local dnsmasq that only resolves whitelisted
+# domains.  iptables blocks external DNS so the container must use the
+# local resolver.  CAP_NET_ADMIN is permanently dropped via capsh.
+# -----------------------------------------------------------------------
+if [ "${OPEN_TERMINAL_ALLOWED_DOMAINS+set}" = "set" ]; then
+    if ! command -v iptables &>/dev/null; then
+        echo "WARNING: iptables not found — skipping egress firewall"
+        exec open-terminal "$@"
+    fi
+
+    # Flush any prior OUTPUT rules
+    sudo iptables -F OUTPUT 2>/dev/null || true
+
+    # Always allow loopback + established connections
+    sudo iptables -A OUTPUT -o lo -j ACCEPT
+    sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+    if [ -z "$OPEN_TERMINAL_ALLOWED_DOMAINS" ]; then
+        # ── Deny-all mode ──────────────────────────────────────────────
+        echo "Egress: blocking ALL outbound traffic"
+        sudo iptables -A OUTPUT -j DROP
+    else
+        # ── Restricted mode (DNS whitelist + ipset) ────────────────────
+        echo "Egress: DNS whitelist — $OPEN_TERMINAL_ALLOWED_DOMAINS"
+
+        # Capture the current upstream nameserver before we override resolv.conf
+        UPSTREAM_DNS=$(grep -m1 '^nameserver' /etc/resolv.conf | awk '{print $2}')
+        UPSTREAM_DNS="${UPSTREAM_DNS:-8.8.8.8}"
+
+        # Create ipset for dynamically resolved IPs
+        sudo ipset create allowed hash:ip -exist
+
+        # Generate dnsmasq config:
+        #   - NXDOMAIN for everything by default
+        #   - Forward allowed domains to upstream DNS
+        #   - Auto-add resolved IPs to the 'allowed' ipset
+        sudo mkdir -p /etc/dnsmasq.d
+        {
+            echo "no-resolv"
+            echo "no-hosts"
+            echo "listen-address=127.0.0.1"
+            echo "port=53"
+            echo "address=/#/"   # NXDOMAIN for everything by default
+
+            IFS=',' read -ra DOMAINS <<< "$OPEN_TERMINAL_ALLOWED_DOMAINS"
+            for domain in "${DOMAINS[@]}"; do
+                domain=$(echo "$domain" | xargs)  # trim
+                [ -z "$domain" ] && continue
+                # Strip wildcard prefix — dnsmasq matches all subdomains natively
+                domain="${domain#\*.}"
+                echo "server=/${domain}/${UPSTREAM_DNS}"
+                echo "ipset=/${domain}/allowed"
+                echo "  ✓ ${domain} (+ subdomains)" >&2
+            done
+        } | sudo tee /etc/dnsmasq.d/egress.conf > /dev/null
+
+        # Start dnsmasq as a background daemon
+        sudo dnsmasq --conf-file=/etc/dnsmasq.d/egress.conf
+        echo "dnsmasq started (upstream: ${UPSTREAM_DNS})"
+
+        # Point the container at our local resolver
+        echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+
+        # iptables: allow ONLY resolved IPs (via ipset) + block everything else
+        sudo iptables -A OUTPUT -p udp --dport 53 -j DROP       # block external DNS
+        sudo iptables -A OUTPUT -p tcp --dport 53 -j DROP       # block external DNS
+        sudo iptables -A OUTPUT -m set --match-set allowed dst -j ACCEPT  # allow resolved IPs
+        sudo iptables -A OUTPUT -j DROP                          # drop everything else
+    fi
+
+    echo "Egress firewall active — dropping CAP_NET_ADMIN permanently"
+    exec capsh --drop=cap_net_admin -- -c "exec open-terminal $*"
+fi
+
 exec open-terminal "$@"

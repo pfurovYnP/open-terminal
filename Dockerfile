@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip unzip tar gzip bzip2 xz-utils zstd p7zip-full \
     # System
     procps htop lsof strace sysstat \
-    sudo tmux screen tini \
+    sudo tmux screen tini iptables ipset dnsmasq \
     ca-certificates gnupg apt-transport-https \
     # Capabilities (needed for setcap on Python binary)
     libcap2-bin \

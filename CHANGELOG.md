@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.12] - 2026-03-12
+
+### Added
+
+- 🔒 **Network egress filtering** (Docker only) — restrict which domains the container can access via the `OPEN_TERMINAL_ALLOWED_DOMAINS` env var. Supports wildcards (e.g. `*.github.com`). Set to empty string to block all outbound traffic; omit for full access. Skips gracefully on bare-metal installs.
+
 ## [0.11.11] - 2026-03-11
 
 ### Fixed
