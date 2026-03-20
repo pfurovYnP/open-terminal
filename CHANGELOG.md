@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.26] - 2026-03-20
+
+### Changed
+
+- ♻️ **`utils/documents.py`** — extracted all document text extraction logic from `read_file` into a dedicated module with an `EXTRACTORS` registry. Adding a new format now requires only a single function and a one-line registry entry. No behaviour changes.
+
 ## [0.11.25] - 2026-03-20
 
 ### Added
