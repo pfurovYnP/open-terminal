@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 from importlib.metadata import version as _pkg_version
 import fnmatch
 import json
@@ -30,6 +31,14 @@ from open_terminal.utils.fs import UserFS
 if MULTI_USER:
     from open_terminal.utils.user_isolation import check_environment, resolve_user
     check_environment()
+
+if not API_KEY:
+    raise SystemExit(
+        "\n\033[91m"
+        "  OPEN_TERMINAL_API_KEY is required.\n"
+        "  Set via environment variable or --api-key flag.\n"
+        "\033[0m"
+    )
 
 try:
     import fcntl
@@ -94,7 +103,7 @@ async def verify_api_key(
 ):
     if not API_KEY:
         return
-    if not credentials or credentials.credentials != API_KEY:
+    if not credentials or not hmac.compare_digest(credentials.credentials, API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
@@ -1579,7 +1588,7 @@ if ENABLE_TERMINAL:
             try:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=10.0)
                 payload = json.loads(msg)
-                if payload.get("type") != "auth" or payload.get("token") != API_KEY:
+                if payload.get("type") != "auth" or not hmac.compare_digest(payload.get("token", ""), API_KEY):
                     await ws.close(code=4001, reason="Invalid API key")
                     return
             except (asyncio.TimeoutError, json.JSONDecodeError, Exception):

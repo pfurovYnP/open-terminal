@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.30] - 2026-03-25
+
+### Changed
+
+- 🔑 **Stronger auto-generated API keys** — increased from 192-bit (32 chars) to 384-bit (64 chars) entropy, making brute-force attacks computationally infeasible.
+- 🔒 **API key required to start** — the server now refuses to start without an API key configured. The CLI auto-generates one as before, but running via `uvicorn` directly without setting `OPEN_TERMINAL_API_KEY` is no longer allowed.
+- 🛡️ **Constant-time API key comparison** — both HTTP and WebSocket authentication now use `hmac.compare_digest()` instead of `!=`, preventing timing-based key extraction.
+- ⚠️ **CORS default warning** — a prominent yellow box is printed at startup when `--cors-allowed-origins` is left at the default `*`, warning operators to restrict it for production.
+
 ## [0.11.29] - 2026-03-24
 
 ### Fixed

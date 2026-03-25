@@ -86,7 +86,7 @@ def run(
 
     generated = not api_key
     if not api_key:
-        api_key = secrets.token_urlsafe(24)
+        api_key = secrets.token_urlsafe(48)
 
     os.environ["OPEN_TERMINAL_API_KEY"] = api_key
     os.environ["OPEN_TERMINAL_CORS_ALLOWED_ORIGINS"] = cors_allowed_origins
@@ -116,6 +116,16 @@ def run(
     if host == "0.0.0.0":
         click.echo(click.style("  Warning: Listening on all network interfaces.", fg="yellow"))
         click.echo(click.style("  Use --host 127.0.0.1 to restrict to this machine.", dim=True))
+        click.echo()
+
+    if cors_allowed_origins.strip() == "*":
+        click.echo(click.style("  ┌─────────────────────────────────────────────────────────────┐", fg="yellow"))
+        click.echo(click.style("  │  ⚠  CORS is set to '*' (allow all origins)                 │", fg="yellow"))
+        click.echo(click.style("  │                                                             │", fg="yellow"))
+        click.echo(click.style("  │  Any website can make requests to this server.              │", fg="yellow"))
+        click.echo(click.style("  │  For production, restrict with:                             │", fg="yellow"))
+        click.echo(click.style("  │    --cors-allowed-origins https://your-domain.com           │", fg="yellow"))
+        click.echo(click.style("  └─────────────────────────────────────────────────────────────┘", fg="yellow"))
         click.echo()
 
     from open_terminal.env import UVICORN_LOOP
