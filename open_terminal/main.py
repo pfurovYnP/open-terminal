@@ -450,10 +450,13 @@ async def set_cwd(
     },
 )
 async def list_files(
+    http_request: Request,
     directory: str = Query(".", description="Directory path to list."),
     fs: UserFS = Depends(get_filesystem),
 ):
-    target = fs.resolve_path(directory)
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(directory, cwd=session_cwd)
     if not await fs.isdir(target):
         raise HTTPException(status_code=404, detail="Directory not found")
     entries = await fs.listdir(target)
@@ -473,6 +476,7 @@ async def list_files(
     },
 )
 async def read_file(
+    http_request: Request,
     path: str = Query(..., description="Path to the file to read."),
     start_line: Optional[int] = Query(
         None, description="First line to return (1-indexed, inclusive). Defaults to the beginning of the file.", ge=1
@@ -482,8 +486,9 @@ async def read_file(
     ),
     fs: UserFS = Depends(get_filesystem),
 ):
-
-    target = fs.resolve_path(path)
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(path, cwd=session_cwd)
     if not await fs.isfile(target):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -544,6 +549,7 @@ async def read_file(
     },
 )
 async def display_file(
+    http_request: Request,
     path: str = Query(..., description="Absolute path to the file to display."),
     fs: UserFS = Depends(get_filesystem),
 ):
@@ -554,7 +560,9 @@ async def display_file(
     intercepting this response and presenting the file in its own UI (e.g.
     opening a preview pane, launching a viewer, etc.).
     """
-    target = fs.resolve_path(path)
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(path, cwd=session_cwd)
     exists = await fs.isfile(target)
     return {"path": target, "exists": exists}
 
@@ -595,8 +603,10 @@ async def view_file(
         401: {"description": "Invalid or missing API key."},
     },
 )
-async def write_file(request: WriteRequest, fs: UserFS = Depends(get_filesystem)):
-    target = fs.resolve_path(request.path)
+async def write_file(http_request: Request, request: WriteRequest, fs: UserFS = Depends(get_filesystem)):
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(request.path, cwd=session_cwd)
     try:
         await fs.write(target, request.content)
     except (OSError, subprocess.CalledProcessError) as e:
@@ -676,8 +686,10 @@ async def move_entry(request: MoveRequest, fs: UserFS = Depends(get_filesystem))
         401: {"description": "Invalid or missing API key."},
     },
 )
-async def replace_file_content(request: ReplaceRequest, fs: UserFS = Depends(get_filesystem)):
-    target = fs.resolve_path(request.path)
+async def replace_file_content(http_request: Request, request: ReplaceRequest, fs: UserFS = Depends(get_filesystem)):
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(request.path, cwd=session_cwd)
     if not await fs.isfile(target):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -735,6 +747,7 @@ async def replace_file_content(request: ReplaceRequest, fs: UserFS = Depends(get
     },
 )
 async def grep_search(
+    http_request: Request,
     query: str = Query(..., description="Text or regex pattern to search for."),
     path: str = Query(".", description="Directory or file to search in."),
     regex: bool = Query(False, description="Treat query as a regex pattern."),
@@ -754,7 +767,9 @@ async def grep_search(
     ),
     fs: UserFS = Depends(get_filesystem),
 ):
-    target = fs.resolve_path(path)
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(path, cwd=session_cwd)
     if not await aiofiles.os.path.exists(target):
         raise HTTPException(status_code=404, detail="Search path not found")
 
@@ -845,6 +860,7 @@ async def grep_search(
     },
 )
 async def glob_search(
+    http_request: Request,
     pattern: str = Query(..., description="Glob pattern to search for (e.g. '*.py')."),
     path: str = Query(".", description="Directory to search within."),
     exclude: Optional[list[str]] = Query(
@@ -860,7 +876,9 @@ async def glob_search(
     ),
     fs: UserFS = Depends(get_filesystem),
 ):
-    target = fs.resolve_path(path)
+    session_id = http_request.headers.get("x-session-id")
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    target = fs.resolve_path(path, cwd=session_cwd)
     if not await aiofiles.os.path.isdir(target):
         raise HTTPException(status_code=404, detail="Search directory not found")
 
@@ -1093,7 +1111,8 @@ async def execute(
 ):
     fs = get_filesystem(http_request)
     session_id = http_request.headers.get("x-session-id")
-    cwd = fs.resolve_path(request.cwd) if request.cwd else _get_session_cwd(session_id, fs)
+    session_cwd = _get_session_cwd(session_id, fs) if session_id else None
+    cwd = fs.resolve_path(request.cwd, cwd=session_cwd) if request.cwd else (session_cwd or fs.home)
 
     subprocess_env = {**os.environ, **request.env} if request.env else None
     runner = await create_runner(

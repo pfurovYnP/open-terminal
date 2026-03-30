@@ -38,12 +38,13 @@ class UserFS:
     # Path resolution
     # ------------------------------------------------------------------
 
-    def resolve_path(self, path: str) -> str:
+    def resolve_path(self, path: str, cwd: str | None = None) -> str:
         """Resolve *path* to an absolute path relative to the user's home.
 
         Absolute paths are normalised in place.  Relative paths are joined
-        to ``self.home`` so that they resolve against the user's home
-        directory rather than the server process's ``os.getcwd()``.
+        to *cwd* (if provided) or ``self.home`` so that they resolve against
+        the session's working directory rather than the server process's
+        ``os.getcwd()``.
 
         In multi-user mode, paths under ``/home/user`` (the server process's
         default home) are automatically rewritten to the provisioned user's
@@ -61,7 +62,7 @@ class UserFS:
                         path = self.home + path[len(prefix):]
                         break
             return os.path.normpath(path)
-        return os.path.normpath(os.path.join(self.home, path))
+        return os.path.normpath(os.path.join(cwd or self.home, path))
 
     # ------------------------------------------------------------------
     # Path validation
