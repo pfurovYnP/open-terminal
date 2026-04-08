@@ -594,6 +594,16 @@ async def view_file(
     return Response(content=raw, media_type=mime)
 
 
+@app.get(
+    "/files/serve/{path:path}",
+    include_in_schema=False,
+    dependencies=[Depends(verify_api_key)],
+)
+async def serve_file(path: str, fs: UserFS = Depends(get_filesystem)):
+    """Path-based alias for view_file — enables relative URL resolution in iframes."""
+    return await view_file(path=f"/{path}", fs=fs)
+
+
 @app.post(
     "/files/write",
     operation_id="write_file",
