@@ -1428,11 +1428,6 @@ if ENABLE_TERMINAL:
     from datetime import datetime as _datetime
     from fastapi.responses import JSONResponse
 
-    try:
-        import select as _select
-    except ImportError:
-        _select = None  # Not available on all platforms in all contexts
-
     # Determine terminal backend: prefer Unix PTY, then pywinpty, else None
     if _PTY_AVAILABLE:
         _TERMINAL_BACKEND = "pty"
@@ -1702,13 +1697,45 @@ if ENABLE_TERMINAL:
             master_fd = session["master_fd"]
             process = session["process"]
 
-            def _blocking_read():
-                """Read from PTY using select() so we don't block forever."""
+            async def _read_data():
+                """Read from the non-blocking PTY fd without occupying a worker thread."""
+                loop = asyncio.get_running_loop()
+
                 while not stop_event.is_set():
                     try:
-                        rlist, _, _ = _select.select([master_fd], [], [], 0.1)
-                        if rlist:
-                            return os.read(master_fd, 4096)
+                        return os.read(master_fd, 4096)
+                    except BlockingIOError:
+                        process_exited = process.poll() is not None
+                        if process_exited:
+                            # Do not wait for EOF from background descendants
+                            # that inherited the terminal file descriptors, but
+                            # allow one tiny drain window for bytes already in
+                            # flight from the exiting shell.
+                            timeout = 0.05
+                        else:
+                            timeout = 0.1
+
+                        future = loop.create_future()
+
+                        def _mark_readable():
+                            if not future.done():
+                                future.set_result(None)
+
+                        try:
+                            loop.add_reader(master_fd, _mark_readable)
+                        except (AttributeError, NotImplementedError):
+                            await asyncio.sleep(min(timeout, 0.05))
+                            if process_exited:
+                                return b""
+                            continue
+
+                        try:
+                            await asyncio.wait_for(future, timeout=timeout)
+                        except asyncio.TimeoutError:
+                            if process_exited:
+                                return b""
+                        finally:
+                            loop.remove_reader(master_fd)
                     except (OSError, ValueError):
                         return b""
                 return b""
@@ -1739,6 +1766,9 @@ if ENABLE_TERMINAL:
                 except Exception:
                     return b""
 
+            async def _read_data():
+                return await loop.run_in_executor(None, _blocking_read)
+
             def _check_alive():
                 return pty_proc.isalive()
 
@@ -1754,7 +1784,7 @@ if ENABLE_TERMINAL:
             """Forward PTY output -> WebSocket."""
             try:
                 while not stop_event.is_set():
-                    data = await loop.run_in_executor(None, _blocking_read)
+                    data = await _read_data()
                     if not data:
                         if stop_event.is_set():
                             break

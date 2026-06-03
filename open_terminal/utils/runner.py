@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import shlex
@@ -23,6 +24,10 @@ try:
     _WINPTY_AVAILABLE = True
 except ImportError:
     _WINPTY_AVAILABLE = False
+
+
+PTY_READ_TIMEOUT = 0.1
+PTY_EXIT_DRAIN_TIMEOUT = 0.05
 
 
 class ProcessRunner(ABC):
@@ -82,17 +87,68 @@ class PtyRunner(ProcessRunner):
             os.close(master_fd)
             raise
         os.close(slave_fd)
+
+        # The master side of a PTY is otherwise a blocking file descriptor.
+        # Reading it through the event loop's default executor ties up one
+        # worker thread for the lifetime of every running command, which can
+        # starve unrelated async file and subprocess operations under high
+        # concurrency.  Keep the fd non-blocking and wait for readability from
+        # the event loop instead.
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
         self._master_fd = master_fd
 
+    async def _wait_until_readable(self, timeout: float = PTY_READ_TIMEOUT) -> bool:
+        """Suspend until the PTY master fd becomes readable without a thread."""
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def _mark_readable() -> None:
+            if not future.done():
+                future.set_result(None)
+
+        try:
+            loop.add_reader(self._master_fd, _mark_readable)
+        except (AttributeError, NotImplementedError):
+            # Some event loops do not expose fd readiness APIs.  This is still
+            # non-blocking: polling with a short sleep avoids occupying the
+            # default executor indefinitely.
+            await asyncio.sleep(min(timeout, 0.05))
+            return False
+
+        try:
+            await asyncio.wait_for(future, timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            loop.remove_reader(self._master_fd)
+
     async def read_output(self, log_file) -> None:
-        loop = asyncio.get_event_loop()
         while True:
             try:
-                data = await loop.run_in_executor(None, os.read, self._master_fd, 4096)
-                if not data:
+                data = os.read(self._master_fd, 4096)
+            except BlockingIOError:
+                if self._process.poll() is not None:
+                    # A background descendant may inherit the PTY slave and keep
+                    # stdout/stderr open forever.  The command is complete once
+                    # the shell process we spawned has exited and there is no
+                    # currently buffered output to drain.  Give the PTY one tiny
+                    # grace window first so bytes written right before shell exit
+                    # are not dropped by a scheduling race.
+                    if await self._wait_until_readable(PTY_EXIT_DRAIN_TIMEOUT):
+                        continue
                     break
-            except OSError:
-                break  # EIO when child exits
+                await self._wait_until_readable()
+                continue
+            except OSError as exc:
+                if exc.errno in (errno.EIO, errno.EBADF):
+                    break  # EIO is reported by PTYs when the child exits.
+                raise
+
+            if not data:
+                break
+
             if log_file:
                 await log_file.write(
                     json.dumps(
